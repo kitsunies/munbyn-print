@@ -7,6 +7,9 @@ license = "MIT"
 requires-python = ">=3.9"
 dependencies = ["Pillow>=9"]
 
+[project.optional-dependencies]
+ble = ["bleak>=1.0"]
+
 [project.scripts]
 munbyn-print = "munbyn_print:main"
 

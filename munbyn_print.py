@@ -5,10 +5,11 @@ The printer speaks TSPL. The vendor macOS driver is only a CUPS filter that turn
 pages into TSPL, and the Windows Bluetooth driver only pairs the printer (PIN 0000)
 and opens a Serial Port Profile (SPP) channel. This module does both jobs itself:
 
-    PDF / image -> 1-bit bitmap -> TSPL -> Bluetooth RFCOMM socket or /dev/usb/lp0
+    PDF / image -> 1-bit bitmap -> TSPL -> Bluetooth SPP / BLE or /dev/usb/lp0
 """
 
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -24,6 +25,7 @@ from PIL import Image
 
 DPI = 203
 LABEL_MM = (100, 150)  # 4x6 in shipping label
+BLE_WRITE_UUID = "49535343-8841-43f4-a8d4-ecbe34729bb3"
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
@@ -109,9 +111,40 @@ def send_usb(payload: bytes, device: str = "/dev/usb/lp0") -> None:
         dev.write(payload)
 
 
-def send(payload: bytes, target: str, channel: int = 1) -> None:
+def send_ble(payload: bytes, mac: str, timeout: float = 20) -> None:
+    """Write TSPL to the ITPP130B BLE serial characteristic at an exact address."""
+    try:
+        from bleak import BleakClient
+    except ImportError as exc:
+        raise OSError("BLE requires: pip install 'munbyn-print[ble]'") from exc
+
+    async def write():
+        async with BleakClient(mac, timeout=timeout) as client:
+            characteristic = client.services.get_characteristic(BLE_WRITE_UUID)
+            if characteristic is None:
+                raise OSError(f"printer lacks BLE characteristic {BLE_WRITE_UUID}")
+            chunk_size = min(512, characteristic.max_write_without_response_size)
+            for start in range(0, len(payload), chunk_size):
+                await asyncio.wait_for(
+                    client.write_gatt_char(
+                        characteristic, payload[start:start + chunk_size], response=True,
+                    ), timeout=timeout,
+                )
+            # shortcut: fixed drain delay; use printer status if jobs are truncated.
+            await asyncio.sleep(1)
+
+    try:
+        asyncio.run(write())
+    except Exception as exc:
+        # Never retry a partial job automatically: it could print duplicate labels.
+        raise OSError(f"BLE write failed for {mac}: {exc}") from exc
+
+
+def send(payload: bytes, target: str, channel: int = 1, ble: bool = False) -> None:
     """target is a Bluetooth MAC (AA:BB:CC:DD:EE:FF) or a device path."""
-    if target.startswith("/"):
+    if ble:
+        send_ble(payload, target)
+    elif target.startswith("/"):
         send_usb(payload, target)
     else:
         send_bluetooth(payload, target, channel)
@@ -120,7 +153,8 @@ def send(payload: bytes, target: str, channel: int = 1) -> None:
 # ── HTTP print server ────────────────────────────────────────────────────────
 
 
-def serve(target: str, host: str, port: int, channel: int = 1, **opts) -> None:
+def serve(target: str, host: str, port: int, channel: int = 1,
+          ble: bool = False, **opts) -> None:
     """POST a PDF, image or TSPL body to /print. One job at a time; the response
     says whether it reached the printer, so callers own their retry policy."""
     lock = threading.Lock()
@@ -152,7 +186,7 @@ def serve(target: str, host: str, port: int, channel: int = 1, **opts) -> None:
                 return self._reply(400, {"error": f"could not render: {exc}"})
             try:
                 with lock:
-                    send(payload, target, channel)
+                    send(payload, target, channel, ble=ble)
             except OSError as exc:
                 return self._reply(503, {"error": f"printer unreachable: {exc}"})
             self._reply(200, {"ok": True, "bytes": len(payload)})
@@ -170,6 +204,7 @@ def main(argv=None) -> None:
                    help="Bluetooth MAC or USB device path (env MUNBYN_PRINTER)")
     p.add_argument("--channel", type=int, default=int(os.environ.get("MUNBYN_CHANNEL", "1")),
                    help="RFCOMM channel (default 1)")
+    p.add_argument("--ble", action="store_true", help="use BLE instead of classic Bluetooth SPP")
     p.add_argument("--size", default="100x150", help="label size in mm, WxH (default 100x150)")
     p.add_argument("--density", type=int, default=8, help="print darkness 0-15 (default 8)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -185,14 +220,14 @@ def main(argv=None) -> None:
     label_mm = tuple(int(x) for x in a.size.lower().split("x"))
     opts = {"label_mm": label_mm, "density": a.density}
     if a.cmd == "serve":
-        return serve(a.printer, a.host, a.port, a.channel, **opts)
+        return serve(a.printer, a.host, a.port, a.channel, ble=a.ble, **opts)
     data = sys.stdin.buffer.read() if a.file == "-" else open(a.file, "rb").read()
     payload = file_to_tspl(data, copies=a.copies, **opts)
     if a.dry_run:
         with open(a.dry_run, "wb") as f:
             f.write(payload)
     else:
-        send(payload, a.printer, a.channel)
+        send(payload, a.printer, a.channel, ble=a.ble)
 
 
 if __name__ == "__main__":

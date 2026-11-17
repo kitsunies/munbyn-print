@@ -1,13 +1,66 @@
 import io
 import os
 import socket
+import sys
 import threading
+from types import SimpleNamespace
 import urllib.request
 
 import pytest
 from PIL import Image, ImageDraw
 
 import munbyn_print as mp
+
+
+def test_ble_uses_exact_address_and_preserves_chunk_order(monkeypatch):
+    calls = []
+    characteristic = SimpleNamespace(max_write_without_response_size=20)
+
+    class Client:
+        def __init__(self, address, timeout):
+            calls.append(address)
+            self.services = SimpleNamespace(get_characteristic=lambda uuid: characteristic)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            calls.append("disconnected")
+
+        async def write_gatt_char(self, char, data, response):
+            assert char is characteristic
+            assert response is True
+            assert 0 < len(data) <= 20
+            calls.append(data)
+
+    monkeypatch.setitem(sys.modules, "bleak", SimpleNamespace(BleakClient=Client))
+    payload = bytes(range(57))
+    mp.send(payload, "AA:BB:CC:DD:EE:FF", ble=True)
+    assert calls[0] == "AA:BB:CC:DD:EE:FF"
+    assert b"".join(calls[1:-1]) == payload
+    assert calls[-1] == "disconnected"
+
+
+def test_ble_failure_is_reported_without_retry(monkeypatch):
+    calls = []
+
+    def fail(address, timeout):
+        calls.append(address)
+        raise RuntimeError("connection failed")
+
+    monkeypatch.setitem(sys.modules, "bleak", SimpleNamespace(BleakClient=fail))
+    with pytest.raises(OSError, match="connection failed"):
+        mp.send(b"PRINT 1,1", "AA:BB:CC:DD:EE:FF", ble=True)
+    assert calls == ["AA:BB:CC:DD:EE:FF"]
+
+
+def test_cli_ble_print_routes_to_ble_transport(monkeypatch, tmp_path):
+    label = tmp_path / "label.tspl"
+    label.write_bytes(b"SIZE 100 mm,150 mm\r\nPRINT 1,1\r\n")
+    calls = []
+    monkeypatch.setattr(mp, "send_ble", lambda data, mac: calls.append((data, mac)))
+    mp.main(["--ble", "--printer", "AA:BB:CC:DD:EE:FF", "print", str(label)])
+    assert calls == [(label.read_bytes(), "AA:BB:CC:DD:EE:FF")]
 
 
 def _bitmap(payload):
