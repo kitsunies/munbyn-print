@@ -20,9 +20,11 @@ MUNBYN ships drivers for Windows, macOS and ChromeOS only. You don't need any of
 This tool renders PDFs and images to a 1-bit bitmap, wraps it in TSPL and sends
 it over an RFCOMM socket (Python stdlib) or to `/dev/usb/lp0`.
 
-Tested on an ITPP130B using BLE from Debian 13 with BlueZ 5.82: a physical TSPL
-test label was confirmed on 2026-11-17. Classic SPP and USB remain unverified on
-this hardware. Sending bytes successfully does not confirm a physical label printed.
+Tested on an ITPP130B using BLE from Debian 13 with BlueZ 5.82: physical text and
+full 100x150 mm bitmap labels, including border alignment, were confirmed on
+2026-11-17. The bitmap test used this tool's CLI with Bleak 3.1.0. Classic SPP and
+USB remain unverified on this hardware. A successful write alone does not confirm
+a physical label printed.
 
 ## Install
 
