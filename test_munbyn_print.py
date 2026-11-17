@@ -97,6 +97,19 @@ def test_pdf_renders_to_label():
     assert (wb, h) == (100, 1199)
 
 
+def test_pdf_label_on_a4_page_keeps_barcode_scale():
+    page = Image.new("RGB", (600, 840), "white")
+    ImageDraw.Draw(page).rectangle((20, 50, 299, 449), fill="black")
+    buf = io.BytesIO()
+    page.save(buf, "PDF")
+    wb, h, bits, _ = _bitmap(mp.file_to_tspl(buf.getvalue()))
+    rendered = Image.frombytes("1", (wb * 8, h), bits).convert("L")
+    bounds = rendered.point(lambda value: 255 if value < 128 else 0).getbbox()
+    assert bounds is not None
+    assert bounds[2] - bounds[0] > 750
+    assert bounds[3] - bounds[1] > 1100
+
+
 def test_raw_tspl_passes_through():
     assert mp.file_to_tspl(b"SIZE 50 mm,30 mm\r\nCLS\r\n") == b"SIZE 50 mm,30 mm\r\nCLS\r\n"
 

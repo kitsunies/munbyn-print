@@ -42,7 +42,10 @@ def render_pdf(data: bytes, page: int = 1) -> Image.Image:
              "-png", "-singlefile", src, os.path.join(tmp, "out")],
             check=True, capture_output=True, timeout=60,
         )
-        return Image.open(os.path.join(tmp, "out.png")).copy()
+        img = Image.open(os.path.join(tmp, "out.png")).convert("L")
+        # Shipping PDFs can place a 4x6 label inside an otherwise blank A4 page.
+        bounds = img.point(lambda value: 255 if value < 240 else 0).getbbox()
+        return img.crop(bounds) if bounds else img
 
 
 def fit(img: Image.Image, label_mm=LABEL_MM) -> Image.Image:

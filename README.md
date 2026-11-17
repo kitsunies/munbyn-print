@@ -84,7 +84,9 @@ munbyn-print --printer /dev/usb/lp0 print photo.png --copies 2
 munbyn-print print label.pdf --dry-run out.tspl     # inspect the TSPL, print nothing
 ```
 
-Landscape artwork is rotated and everything is scaled to fit the label.
+PDF page whitespace is cropped to the visible label content, including shipping
+labels placed on A4 pages. Landscape artwork is rotated and everything is scaled
+to fit the label. Image files preserve their supplied margins.
 Options: `--size 100x150` (mm, default 4x6 in), `--density 0-15`, `--channel`
 (RFCOMM channel, default 1). `MUNBYN_PRINTER` and `MUNBYN_CHANNEL` env vars work too.
 
