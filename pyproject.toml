@@ -1,0 +1,18 @@
+[project]
+name = "munbyn-print"
+version = "0.1.0"
+description = "Print to MUNBYN ITPP130/ITPP130B label printers from Linux over Bluetooth or USB. No driver, no CUPS."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["Pillow>=9"]
+
+[project.scripts]
+munbyn-print = "munbyn_print:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["munbyn_print"]

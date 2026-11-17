@@ -1,0 +1,15 @@
+[Unit]
+Description=MUNBYN label print server
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+# Set to the printer's Bluetooth MAC, or /dev/usb/lp0 for USB.
+Environment=MUNBYN_PRINTER=AA:BB:CC:DD:EE:FF
+ExecStart=/usr/local/bin/munbyn-print serve --port 8130
+Restart=on-failure
+DynamicUser=yes
+SupplementaryGroups=lp
+
+[Install]
+WantedBy=multi-user.target
