@@ -108,6 +108,14 @@ The server has no authentication. Run it on a trusted network with access limite
 to intended clients. `/health` reports server availability, not printer readiness.
 
 `munbyn-print.service` is a systemd unit for running it permanently.
+Create its dedicated account before enabling it:
+
+```bash
+sudo useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin munbyn-print
+```
+
+Use a static system account for BLE: a DynamicUser account failed system D-Bus
+authentication on the tested Debian host, before any print bytes were sent.
 For BLE, add `--ble` before `serve` in its `ExecStart`. Bleak requires access to
 the system D-Bus and permission to use BlueZ; container BLE setups also need
 access to the host's system D-Bus socket.

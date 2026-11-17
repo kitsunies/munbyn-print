@@ -191,6 +191,7 @@ def serve(target: str, host: str, port: int, channel: int = 1,
                 with lock:
                     send(payload, target, channel, ble=ble)
             except OSError as exc:
+                self.log_error("printer unreachable: %s", exc)
                 return self._reply(503, {"error": f"printer unreachable: {exc}"})
             self._reply(200, {"ok": True, "bytes": len(payload)})
 

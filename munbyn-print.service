@@ -8,7 +8,14 @@ Wants=bluetooth.target
 Environment=MUNBYN_PRINTER=AA:BB:CC:DD:EE:FF
 ExecStart=/usr/local/bin/munbyn-print serve --port 8130
 Restart=on-failure
-DynamicUser=yes
+User=munbyn-print
+Group=munbyn-print
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+RemoveIPC=yes
+RestrictSUIDSGID=yes
 SupplementaryGroups=lp
 
 [Install]
