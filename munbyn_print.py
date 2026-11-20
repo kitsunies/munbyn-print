@@ -61,10 +61,14 @@ def fit(img: Image.Image, label_mm=LABEL_MM) -> Image.Image:
 
 
 def to_tspl(img: Image.Image, label_mm=LABEL_MM, gap_mm: int = 3,
-            density: int = 8, copies: int = 1) -> bytes:
+            density: int = 8, copies: int = 1, offset_mm=(0, 0)) -> bytes:
     """Build one TSPL job. PIL mode "1" stores black as 0, which is exactly what
     TSPL BITMAP mode 0 wants (0 = burn a dot), so the packed bytes go straight in."""
     img = img.convert("L")
+    if any(offset_mm):  # per-printer calibration: +x right, +y down, in mm
+        shifted = Image.new("L", img.size, 255)
+        shifted.paste(img, tuple(round(mm * DPI / 25.4) for mm in offset_mm))
+        img = shifted
     if img.width % 8:  # pad rows to whole bytes with white, never stray black dots
         padded = Image.new("L", (img.width + 8 - img.width % 8, img.height), 255)
         padded.paste(img, (0, 0))
@@ -126,12 +130,19 @@ def send_ble(payload: bytes, mac: str, timeout: float = 20) -> None:
             characteristic = client.services.get_characteristic(BLE_WRITE_UUID)
             if characteristic is None:
                 raise OSError(f"printer lacks BLE characteristic {BLE_WRITE_UUID}")
+            # The ITPP130B keeps the 23-byte ATT MTU (20-byte writes), and an
+            # acknowledged write per chunk took minutes per label. Unacknowledged
+            # writes return once queued locally, so the last chunk is acknowledged:
+            # ATT is ordered, so its response means every earlier chunk went out.
             chunk_size = min(512, characteristic.max_write_without_response_size)
+            fast = "write-without-response" in characteristic.properties
+            last = max(0, len(payload) - chunk_size)
             for start in range(0, len(payload), chunk_size):
                 await asyncio.wait_for(
                     client.write_gatt_char(
-                        characteristic, payload[start:start + chunk_size], response=True,
-                    ), timeout=timeout,
+                        characteristic, payload[start:start + chunk_size],
+                        response=not fast or start >= last,
+                    ), timeout=timeout if start < last else max(timeout, 120),
                 )
             # shortcut: fixed drain delay; use printer status if jobs are truncated.
             await asyncio.sleep(1)
@@ -211,6 +222,8 @@ def main(argv=None) -> None:
     p.add_argument("--ble", action="store_true", help="use BLE instead of classic Bluetooth SPP")
     p.add_argument("--size", default="100x150", help="label size in mm, WxH (default 100x150)")
     p.add_argument("--density", type=int, default=8, help="print darkness 0-15 (default 8)")
+    p.add_argument("--offset", default=os.environ.get("MUNBYN_OFFSET", "0,0"),
+                   help="calibration shift in mm, X,Y; +X right, +Y down (env MUNBYN_OFFSET)")
     sub = p.add_subparsers(dest="cmd", required=True)
     pr = sub.add_parser("print", help="print a PDF, image or TSPL file ('-' for stdin)")
     pr.add_argument("file")
@@ -222,7 +235,8 @@ def main(argv=None) -> None:
     a = p.parse_args(argv)
 
     label_mm = tuple(int(x) for x in a.size.lower().split("x"))
-    opts = {"label_mm": label_mm, "density": a.density}
+    offset_mm = tuple(float(x) for x in a.offset.split(","))
+    opts = {"label_mm": label_mm, "density": a.density, "offset_mm": offset_mm}
     if a.cmd == "serve":
         return serve(a.printer, a.host, a.port, a.channel, ble=a.ble, **opts)
     data = sys.stdin.buffer.read() if a.file == "-" else open(a.file, "rb").read()

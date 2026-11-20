@@ -13,8 +13,10 @@ import munbyn_print as mp
 
 
 def test_ble_uses_exact_address_and_preserves_chunk_order(monkeypatch):
-    calls = []
-    characteristic = SimpleNamespace(max_write_without_response_size=20)
+    calls, responses = [], []
+    characteristic = SimpleNamespace(
+        max_write_without_response_size=20, properties=["write", "write-without-response"],
+    )
 
     class Client:
         def __init__(self, address, timeout):
@@ -29,9 +31,9 @@ def test_ble_uses_exact_address_and_preserves_chunk_order(monkeypatch):
 
         async def write_gatt_char(self, char, data, response):
             assert char is characteristic
-            assert response is True
             assert 0 < len(data) <= 20
             calls.append(data)
+            responses.append(response)
 
     monkeypatch.setitem(sys.modules, "bleak", SimpleNamespace(BleakClient=Client))
     payload = bytes(range(57))
@@ -39,6 +41,9 @@ def test_ble_uses_exact_address_and_preserves_chunk_order(monkeypatch):
     assert calls[0] == "AA:BB:CC:DD:EE:FF"
     assert b"".join(calls[1:-1]) == payload
     assert calls[-1] == "disconnected"
+    # Only the final chunk is acknowledged: it proves the queued chunks were sent
+    # before disconnecting, without a round trip per chunk.
+    assert responses == [False, False, True]
 
 
 def test_ble_failure_is_reported_without_retry(monkeypatch):
@@ -145,3 +150,15 @@ def test_http_server_prints_and_reports_unreachable(tmp_path):
     dev.touch()
     assert post().status == 200
     assert dev.read_bytes() == b"SIZE 1 mm,1 mm\r\n"
+
+
+def test_offset_shifts_image_left_and_down():
+    img = Image.new("L", (64, 64), 255)
+    img.putpixel((20, 4), 0)
+    job = mp.to_tspl(img, label_mm=(8, 8), offset_mm=(-1, 2))  # 1 mm = 8 dots
+    head, _, rest = job.partition(b"BITMAP ")
+    bits = rest.split(b",", 5)[5][:-len(b"\r\nPRINT 1,1\r\n")]
+    assert len(bits) == 8 * 64
+    black = [(i % 8 * 8 + 7 - b, i // 8) for i, byte in enumerate(bits)
+             for b in range(8) if not byte >> b & 1]
+    assert black == [(12, 20)]

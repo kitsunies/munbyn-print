@@ -43,11 +43,16 @@ pip install 'munbyn-print[ble] @ git+https://github.com/kitsunies/munbyn-print'
 
 BLE uses Bleak and the printer's serial service
 `49535343-fe7d-4ae5-8fa9-9fafd205e455`, writing TSPL to characteristic
-`49535343-8841-43f4-a8d4-ecbe34729bb3`. Writes are acknowledged and split into
-chunks bounded by the characteristic's reported write size. No automatic retry
-is performed, because a failed job may already have printed partly.
-The current acknowledged-write path is conservative: a full 100x150 mm bitmap
-transfer took several minutes in testing.
+`49535343-8841-43f4-a8d4-ecbe34729bb3`. The ITPP130B keeps the default 23-byte
+ATT MTU, so writes are 20-byte chunks. They are sent without acknowledgement,
+except the last chunk, whose response confirms every earlier chunk left the
+adapter before disconnecting. A full 100x150 mm label takes about 11 s, against
+214 s with every chunk acknowledged. No automatic retry is performed, because a
+failed job may already have printed partly.
+
+The tested printer rejected a zlib-compressed `BITMAP` (mode 3) with a GATT error
+and printed nothing; power-cycle the printer after any aborted job, since it can
+be left waiting for the rest of a bitmap.
 
 Disconnect the phone before scanning or printing. For a printer advertising as
 `ITPP130B-…-LE`, use its exact BLE MAC with `--ble`. The tested BLE endpoint did
@@ -88,7 +93,8 @@ PDF page whitespace is cropped to the visible label content, including shipping
 labels placed on A4 pages. Landscape artwork is rotated and everything is scaled
 to fit the label. Image files preserve their supplied margins.
 Options: `--size 100x150` (mm, default 4x6 in), `--density 0-15`, `--channel`
-(RFCOMM channel, default 1). `MUNBYN_PRINTER` and `MUNBYN_CHANNEL` env vars work too.
+(RFCOMM channel, default 1), `--offset X,Y` (calibration shift in mm, +X right,
++Y down). `MUNBYN_PRINTER`, `MUNBYN_CHANNEL` and `MUNBYN_OFFSET` env vars work too.
 
 ## Print server
 
