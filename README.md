@@ -43,16 +43,19 @@ pip install 'munbyn-print[ble] @ git+https://github.com/kitsunies/munbyn-print'
 
 BLE uses Bleak and the printer's serial service
 `49535343-fe7d-4ae5-8fa9-9fafd205e455`, writing TSPL to characteristic
-`49535343-8841-43f4-a8d4-ecbe34729bb3`. The ITPP130B keeps the default 23-byte
-ATT MTU, so writes are 20-byte chunks. They are sent without acknowledgement,
-except the last chunk, whose response confirms every earlier chunk left the
-adapter before disconnecting. A full 100x150 mm label takes about 11 s, against
-214 s with every chunk acknowledged. No automatic retry is performed, because a
-failed job may already have printed partly.
+`49535343-8841-43f4-a8d4-ecbe34729bb3`. Writes go in 20-byte chunks without
+acknowledgement, except the last chunk, whose response confirms every earlier
+chunk left the adapter before disconnecting. A full 100x150 mm label takes about
+11 s, against 214 s with every chunk acknowledged. The printer can negotiate a
+185-byte MTU, but it has no flow control for unacknowledged writes: 182-byte
+chunks garbled labels. Its serial link drains about 11.5 KB/s either way. No
+automatic retry is performed, because a failed job may already have printed partly.
 
-The tested printer rejected a zlib-compressed `BITMAP` (mode 3) with a GATT error
-and printed nothing; power-cycle the printer after any aborted job, since it can
-be left waiting for the rest of a bitmap.
+The tested printer accepts a vendor `BITMAP` mode 3 (zlib data preceded by its
+length) but prints uniform areas as streaks in either polarity, and it takes
+compressed data slower than raw bitmaps, so this tool sends mode 0. Power-cycle
+the printer after any aborted job: it can be left waiting for the rest of a
+bitmap and would swallow the next label.
 
 Disconnect the phone before scanning or printing. For a printer advertising as
 `ITPP130B-…-LE`, use its exact BLE MAC with `--ble`. The tested BLE endpoint did

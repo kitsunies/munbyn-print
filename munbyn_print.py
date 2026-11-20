@@ -130,12 +130,14 @@ def send_ble(payload: bytes, mac: str, timeout: float = 20) -> None:
             characteristic = client.services.get_characteristic(BLE_WRITE_UUID)
             if characteristic is None:
                 raise OSError(f"printer lacks BLE characteristic {BLE_WRITE_UUID}")
-            # The ITPP130B keeps the 23-byte ATT MTU (20-byte writes), and an
-            # acknowledged write per chunk took minutes per label. Unacknowledged
+            # An acknowledged write per chunk took minutes per label. Unacknowledged
             # writes return once queued locally, so the last chunk is acknowledged:
             # ATT is ordered, so its response means every earlier chunk went out.
-            chunk_size = min(512, characteristic.max_write_without_response_size)
             fast = "write-without-response" in characteristic.properties
+            # The printer has no flow control for unacknowledged writes: 182-byte
+            # chunks (MTU 185, when negotiated) garbled labels; 20-byte chunks print
+            # clean. Its ~11.5 KB/s serial drain caps throughput either way.
+            chunk_size = 20 if fast else min(512, characteristic.max_write_without_response_size)
             last = max(0, len(payload) - chunk_size)
             for start in range(0, len(payload), chunk_size):
                 await asyncio.wait_for(

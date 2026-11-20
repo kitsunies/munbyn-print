@@ -46,6 +46,32 @@ def test_ble_uses_exact_address_and_preserves_chunk_order(monkeypatch):
     assert responses == [False, False, True]
 
 
+def test_ble_unacknowledged_chunks_stay_20_bytes_at_large_mtu(monkeypatch):
+    sizes, responses = [], []
+    characteristic = SimpleNamespace(
+        max_write_without_response_size=182, properties=["write", "write-without-response"],
+    )
+
+    class Client:
+        def __init__(self, address, timeout):
+            self.services = SimpleNamespace(get_characteristic=lambda uuid: characteristic)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def write_gatt_char(self, char, data, response):
+            sizes.append(len(data))
+            responses.append(response)
+
+    monkeypatch.setitem(sys.modules, "bleak", SimpleNamespace(BleakClient=Client))
+    mp.send(bytes(50), "AA:BB:CC:DD:EE:FF", ble=True)
+    assert sizes == [20, 20, 10]  # 182-byte unacknowledged writes garbled labels
+    assert responses == [False, False, True]
+
+
 def test_ble_failure_is_reported_without_retry(monkeypatch):
     calls = []
 
