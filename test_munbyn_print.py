@@ -1,8 +1,10 @@
 import io
+import zlib
 import os
 import socket
 import sys
 import threading
+import time
 from types import SimpleNamespace
 import urllib.request
 
@@ -94,21 +96,52 @@ def test_cli_ble_print_routes_to_ble_transport(monkeypatch, tmp_path):
     assert calls == [(label.read_bytes(), "AA:BB:CC:DD:EE:FF")]
 
 
-def _bitmap(payload):
+def _decode(payload, size=(800, 1199)):
+    """Rebuild the printed dots from a TSPL job: mode 0 BITMAP, 0 = black."""
     _, _, rest = payload.partition(b"BITMAP ")
     x, y, wb, h, mode, rest = rest.split(b",", 5)
-    wb, h = int(wb), int(h)
-    assert (x, y, mode) == (b"0", b"0", b"0")
-    return wb, h, rest[: wb * h], rest[wb * h:]
+    x, y, wb, h = int(x), int(y), int(wb), int(h)
+    assert mode == b"0" and x % 8 == 0
+    canvas = Image.new("1", size, 1)
+    canvas.paste(Image.frombytes("1", (wb * 8, h), rest[: wb * h]), (x, y))
+    return canvas.convert("L"), (x, y, wb, h), rest[wb * h:]
 
 
 def test_black_pixel_is_zero_bit_and_padding_is_white():
     img = Image.new("L", (10, 2), 255)
     img.putpixel((0, 0), 0)
-    wb, h, bits, tail = _bitmap(mp.to_tspl(img, label_mm=(10, 10)))
-    assert (wb, h) == (2, 2)
-    assert bits == bytes([0b01111111, 0xFF, 0xFF, 0xFF])  # 6 pad bits stay white
+    job = mp.to_tspl(img, label_mm=(10, 10))
+    _, box, tail = _decode(job, (16, 2))
+    assert box == (0, 0, 1, 1)  # cropped to the single inked byte
+    assert job.endswith(b",0," + bytes([0b01111111]) + tail)  # pad bits stay white
     assert tail == b"\r\nPRINT 1,1\r\n"
+
+
+def _full_width_dots(img):
+    """What an uncropped job prints: the padded label converted to 1-bit."""
+    padded = Image.new("L", (800, img.height), 255)
+    padded.paste(img, (0, 0))
+    return padded.convert("1").convert("L").tobytes()
+
+
+def test_crop_sends_only_ink_and_prints_identical_dots():
+    img = Image.new("L", (799, 1199), 255)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((101, 230, 530, 700), outline=0, width=3)
+    draw.text((140, 300), "4x6", fill=0)
+    job = mp.to_tspl(img)
+    printed, (x, y, wb, h), _ = _decode(job)
+    assert printed.tobytes() == _full_width_dots(img)
+    assert (x, y, wb * 8, h) == (96, 230, 440, 471)
+    assert len(job) < 27_000  # a full-width bitmap is 120 KB
+
+
+def test_crop_keeps_dithered_grey_dots():
+    img = Image.new("L", (799, 1199), 255)
+    ImageDraw.Draw(img).rectangle((600, 900, 700, 1000), fill=200)  # pale area
+    printed, _, _ = _decode(mp.to_tspl(img))
+    assert printed.tobytes() == _full_width_dots(img)
+    assert printed.getextrema() == (0, 255)  # the grey did produce dots
 
 
 def test_landscape_rotates_and_fits_4x6():
@@ -124,8 +157,8 @@ def test_pdf_renders_to_label():
     Image.new("RGB", (400, 600), "white").save(buf, "PDF")
     payload = mp.file_to_tspl(buf.getvalue())
     assert payload.startswith(b"SIZE 100 mm,150 mm\r\n")
-    wb, h, _, _ = _bitmap(payload)
-    assert (wb, h) == (100, 1199)
+    printed, _, _ = _decode(payload)
+    assert printed.point(lambda v: 255 if v < 128 else 0).getbbox() is None  # blank page
 
 
 def test_pdf_label_on_a4_page_keeps_barcode_scale():
@@ -133,8 +166,7 @@ def test_pdf_label_on_a4_page_keeps_barcode_scale():
     ImageDraw.Draw(page).rectangle((20, 50, 299, 449), fill="black")
     buf = io.BytesIO()
     page.save(buf, "PDF")
-    wb, h, bits, _ = _bitmap(mp.file_to_tspl(buf.getvalue()))
-    rendered = Image.frombytes("1", (wb * 8, h), bits).convert("L")
+    rendered, _, _ = _decode(mp.file_to_tspl(buf.getvalue()))
     bounds = rendered.point(lambda value: 255 if value < 128 else 0).getbbox()
     assert bounds is not None
     assert bounds[2] - bounds[0] > 750
@@ -182,9 +214,52 @@ def test_offset_shifts_image_left_and_down():
     img = Image.new("L", (64, 64), 255)
     img.putpixel((20, 4), 0)
     job = mp.to_tspl(img, label_mm=(8, 8), offset_mm=(-1, 2))  # 1 mm = 8 dots
-    head, _, rest = job.partition(b"BITMAP ")
-    bits = rest.split(b",", 5)[5][:-len(b"\r\nPRINT 1,1\r\n")]
-    assert len(bits) == 8 * 64
-    black = [(i % 8 * 8 + 7 - b, i // 8) for i, byte in enumerate(bits)
-             for b in range(8) if not byte >> b & 1]
+    printed, _, _ = _decode(job, (64, 64))
+    black = [(i % 64, i // 64) for i, v in enumerate(printed.tobytes()) if v == 0]
     assert black == [(12, 20)]
+
+
+def test_warm_rfcomm_reuses_link_reconnects_after_hangup_and_idles_out(monkeypatch):
+    links = []
+
+    def connect(mac, channel, timeout):
+        ours, printer = socket.socketpair()
+        links.append(printer)
+        return ours
+
+    monkeypatch.setattr(mp, "_rfcomm_connect", connect)
+    monkeypatch.setattr(mp, "_rfcomm_send", lambda s, payload: s.sendall(payload))
+    warm = mp.WarmRfcomm("AA:BB:CC:DD:EE:FF", idle=0.2)
+    warm.send(b"one")
+    warm.send(b"two")
+    assert len(links) == 1  # a batch pays the connect once
+    assert links[0].recv(10) == b"onetwo"
+    links[0].close()  # printer power-cycled between jobs
+    warm.send(b"three")
+    assert len(links) == 2 and links[1].recv(10) == b"three"
+    time.sleep(0.4)  # idle: link released so the phone app can connect
+    assert warm.sock is None and links[1].recv(10) == b""
+
+
+def test_compressed_job_decodes_to_the_same_dots():
+    img = Image.new("L", (799, 1199), 255)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((101, 230, 530, 700), outline=0, width=3)
+    draw.rectangle((600, 900, 700, 1000), fill=200)
+    plain = mp.to_tspl(img)
+    packed = mp.to_tspl(img, compress=True)
+    _, _, rest = packed.partition(b"BITMAP ")
+    x, y, wb, h, mode, length, rest = rest.split(b",", 6)
+    assert mode == b"3" and rest[int(length):] == b"\r\nPRINT 1,1\r\n"
+    # The printer inflates, applies the table again, and burns 1 bits.
+    rows = bytes(b ^ 0xFF for b in zlib.decompress(rest[:int(length)]).translate(mp.CODE941))
+    head = b"BITMAP " + b",".join((x, y, wb, h, b"0")) + b","
+    rebuilt = plain[:plain.index(b"BITMAP ")] + head + rows + b"\r\nPRINT 1,1\r\n"
+    assert rebuilt == plain
+    assert len(packed) < len(plain) // 4
+
+
+def test_code941_table_matches_the_vendor_library():
+    assert sorted(mp.CODE941) == list(range(256))
+    assert mp.CODE941.translate(mp.CODE941) == bytes(range(256))  # self-inverse
+    assert (mp.CODE941[0x00], mp.CODE941[0xFF]) == (0xDD, 0x5A)  # the streak bytes seen

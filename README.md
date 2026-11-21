@@ -11,20 +11,29 @@ MUNBYN ships drivers for Windows, macOS and ChromeOS only. You don't need any of
   (`rastertolabel`) that writes `SIZE` / `GAP` / `DIRECTION` / `BITMAP` /
   `PRINT` commands to `usb://`.
 - The Windows Bluetooth driver uses **classic Bluetooth SPP** (Serial Port Profile,
-  UUID `00001101-0000-1000-8000-00805f9b34fb`) and pairing PIN `0000`.
-  Static inspection of the Munbyn Print Android app also found BLE transports
-  and TSPL support. The transport used by each ITPP130B variant is not yet verified.
+  UUID `00001101-0000-1000-8000-00805f9b34fb`) and pairing PIN `0000`. The Munbyn
+  Print Android app also prints to the ITPP130B over classic SPP (RFCOMM channel 1).
 - Over USB it's a standard USB printer class device (`5958:0130`), so the
   kernel's `usblp` gives you `/dev/usb/lp0`.
 
 This tool renders PDFs and images to a 1-bit bitmap, wraps it in TSPL and sends
 it over an RFCOMM socket (Python stdlib) or to `/dev/usb/lp0`.
 
-Tested on an ITPP130B using BLE from Debian 13 with BlueZ 5.82: physical text and
-full 100x150 mm bitmap labels, including border alignment, were confirmed on
-2026-11-17. The bitmap test used this tool's CLI with Bleak 3.1.0. Classic SPP and
-USB remain unverified on this hardware. A successful write alone does not confirm
+Tested on an ITPP130B from Debian 13 with BlueZ 5.82: full 100x150 mm bitmap
+labels over BLE (Bleak 3.1.0) on 2026-11-17 and over classic SPP on 2026-11-21.
+USB remains unverified on this hardware. A successful write alone does not confirm
 a physical label printed.
+
+The ITPP130B is dual-mode with **two addresses**: classic SPP answers on one
+(`DC:1D:...` on the tested unit, advertising `ITPP130B-XXXX`) and BLE on another
+(`DC:0D:...`, advertising `ITPP130B-XXXX-LE`). Find the classic one with
+`hcitool scan`. The tested unit accepted RFCOMM without pairing.
+
+Classic SPP is the faster path: the printer drains about 20 KB/s over SPP against
+about 11.5 KB/s over BLE. Bitmaps are cropped to their inked area (pixel-identical
+output), so a typical shipping label is about 90 KB: about 4.5 s over SPP once
+connected. Connecting takes up to about 4.5 s, so the print server keeps the link
+open between jobs (see below).
 
 ## Install
 
@@ -51,11 +60,15 @@ chunk left the adapter before disconnecting. A full 100x150 mm label takes about
 chunks garbled labels. Its serial link drains about 11.5 KB/s either way. No
 automatic retry is performed, because a failed job may already have printed partly.
 
-The tested printer accepts a vendor `BITMAP` mode 3 (zlib data preceded by its
-length) but prints uniform areas as streaks in either polarity, and it takes
-compressed data slower than raw bitmaps, so this tool sends mode 0. Power-cycle
-the printer after any aborted job: it can be left waiting for the rest of a
-bitmap and would swallow the next label.
+`--compress` (env `MUNBYN_COMPRESS=1`) sends the vendor `BITMAP` mode 3 that the
+Munbyn Print app uses: `BITMAP x,y,wBytes,h,3,<len>,<data>`, where the rows
+(1 = black) pass through a fixed self-inverse 256-byte table (`Code941` in the
+app's `libPrinterNative.so`) and then zlib. A shipping label shrinks from about
+98 KB to about 15 KB. Plain zlib without the table prints vertical streaks,
+because the printer applies the table after inflating.
+
+Power-cycle the printer after any aborted job: it can be left waiting for the
+rest of a bitmap and would swallow the next label.
 
 Disconnect the phone before scanning or printing. For a printer advertising as
 `ITPP130B-…-LE`, use its exact BLE MAC with `--ble`. The tested BLE endpoint did
@@ -108,13 +121,18 @@ curl --data-binary @label.pdf http://printhost:8130/print
 ```
 
 `POST /print` takes a PDF, PNG/JPEG or raw TSPL body and returns `200` once the
-transport write completes, `503` if the printer is unreachable (off, out of range,
+transport write completes (over SPP: once the kernel send queue has drained), `503` if the printer is unreachable (off, out of range,
 connected to a phone) and `400` if the file can't be rendered. Jobs print one at
 a time. There is no queue: the caller decides whether to retry. `GET /health`
 returns `{"ok": true}`.
 
 The server has no authentication. Run it on a trusted network with access limited
 to intended clients. `/health` reports server availability, not printer readiness.
+
+Over classic SPP the server keeps the RFCOMM link open for 30 s after each job,
+so a batch of labels pays the connect once; it then disconnects so a phone app
+can reach the printer. A link the printer dropped (power-cycle) is detected and
+reopened before the next job. Failed writes are never retried automatically.
 
 `munbyn-print.service` is a systemd unit for running it permanently.
 Create its dedicated account before enabling it:
